@@ -1,5 +1,8 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{self, Token, TokenAccount, Transfer}
+};
 
 declare_id!("8a2BSK86azg8kL6Cbd2wvEswnn2eKyS3CSZSgXpfTzTc");
 
@@ -78,6 +81,7 @@ pub mod amoca_climate_insurance {
     /// Deposit premium to activate climate insurance policy
     pub fn deposit_premium(
         ctx: Context<DepositPremium>,
+        _policy_id: u64,
         amount: u64,
     ) -> Result<()> {
         let policy = &mut ctx.accounts.policy;
@@ -161,6 +165,7 @@ pub mod amoca_climate_insurance {
     /// Evaluate climate triggers for a policy
     pub fn evaluate_climate_trigger(
         ctx: Context<EvaluateClimateTrigger>,
+        _policy_id: u64,
     ) -> Result<()> {
         let policy = &mut ctx.accounts.policy;
         let clock = Clock::get()?;
@@ -176,7 +181,7 @@ pub mod amoca_climate_insurance {
         require!(current_time <= policy.end_timestamp, AmocaError::PolicyExpired);
 
         // Evaluate trigger conditions (simplified logic)
-        let trigger_met = evaluate_trigger_conditions(policy, &ctx.accounts.oracle_data_accounts)?;
+        let trigger_met = evaluate_trigger_conditions(policy, &ctx.accounts.oracle_data)?;
         
         if trigger_met {
             policy.status = PolicyStatus::Triggered;
@@ -195,6 +200,7 @@ pub mod amoca_climate_insurance {
     /// Execute automated climate payout
     pub fn execute_climate_payout(
         ctx: Context<ExecuteClimatePayout>,
+        policy_id: u64,
         payout_amount: u64,
     ) -> Result<()> {
         let policy = &mut ctx.accounts.policy;
@@ -212,7 +218,7 @@ pub mod amoca_climate_insurance {
 
         // Execute payout transfer
         let seeds = &[
-            b"risk_pool",
+            b"risk_pool".as_ref(),
             &[ctx.accounts.global_state.bump],
         ];
         let signer_seeds = &[&seeds[..]];
@@ -261,7 +267,7 @@ pub mod amoca_climate_insurance {
 /// Evaluate trigger conditions based on policy and oracle data
 fn evaluate_trigger_conditions(
     policy: &ClimatePolicy,
-    _oracle_accounts: &[AccountInfo],
+    _oracle_account: &UncheckedAccount,
 ) -> Result<bool> {
     // Simplified trigger evaluation logic
     // In production, this would:
@@ -346,13 +352,14 @@ pub struct CreateClimatePolicy<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(policy_id: u64)]
 pub struct DepositPremium<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
     
     #[account(
         mut,
-        seeds = [b"policy", owner.key().as_ref()],
+        seeds = [b"policy", owner.key().as_ref(), &policy_id.to_le_bytes()],
         bump = policy.bump,
         constraint = policy.owner == owner.key() @ AmocaError::Unauthorized
     )]
@@ -400,18 +407,19 @@ pub struct SubmitClimateData<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(policy_id: u64)]
 pub struct EvaluateClimateTrigger<'info> {
     pub evaluator: Signer<'info>,
     
     #[account(
         mut,
-        seeds = [b"policy", policy.owner.as_ref()],
+        seeds = [b"policy", policy.owner.as_ref(), &policy_id.to_le_bytes()],
         bump = policy.bump
     )]
     pub policy: Account<'info, ClimatePolicy>,
     
-    /// CHECK: Oracle data accounts for trigger evaluation
-    pub oracle_data_accounts: Vec<AccountInfo<'info>>,
+    /// CHECK: Oracle data account for trigger evaluation
+    pub oracle_data: UncheckedAccount<'info>,
     
     #[account(
         seeds = [b"global_state"],
@@ -422,12 +430,13 @@ pub struct EvaluateClimateTrigger<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(policy_id: u64)]
 pub struct ExecuteClimatePayout<'info> {
     pub executor: Signer<'info>,
     
     #[account(
         mut,
-        seeds = [b"policy", policy.owner.as_ref()],
+        seeds = [b"policy", policy.owner.as_ref(), &policy_id.to_le_bytes()],
         bump = policy.bump
     )]
     pub policy: Account<'info, ClimatePolicy>,
@@ -546,7 +555,7 @@ impl Default for PolicyStatus {
     }
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
 pub enum ClimateRiskType {
     DroughtProtection,
     FloodInsurance,
